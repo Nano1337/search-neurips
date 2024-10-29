@@ -94,8 +94,8 @@ def main():
     
     # Apply test mode if specified
     if args.test:
-        df_papers = df_papers.head(4)
-        max_workers = 4  # Limit workers in test mode
+        df_papers = df_papers.head(64)
+        max_workers = 32  # Limit workers in test mode
         print("Running in test mode with first 4 samples...")
     else:
         max_workers = min(32, os.cpu_count() * 4)  # Limit to 32 workers maximum

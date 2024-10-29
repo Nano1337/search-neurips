@@ -17,7 +17,10 @@ from datetime import datetime
 
 df = pd.read_csv('nips_2024_with_abstracts_fixed.csv')
 
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = AsyncOpenAI(
+    api_key=os.getenv("XAI_API_KEY"),
+    base_url="https://api.x.ai/v1"
+)
 
 class Relevance(BaseModel):
     justification: str
@@ -41,7 +44,7 @@ Please first reason and provide a justification for your answer. Then, provide y
 @retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(6))
 async def get_completion_with_backoff(title: str, abstract: str):
     return await client.chat.completions.create(
-        model="gpt-4",
+        model="grok-beta",
         messages=[
             {"role": "system", "content": sysprompt},
             {"role": "user", "content": f"Title: {title}\nAbstract: {abstract}"},

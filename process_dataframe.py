@@ -6,6 +6,7 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException
 import pandas as pd
 import time
 from tqdm import tqdm
+import argparse
 
 def setup_driver():
     options = webdriver.ChromeOptions()
@@ -106,51 +107,57 @@ def scrape_paper_details(url, driver):
         return None
 
 def main():
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description='Scrape NeurIPS 2024 paper details')
+    parser.add_argument('--test', action='store_true', help='Run test mode with first 3 links')
+    args = parser.parse_args()
+    
     # Read the CSV file with paper URLs
     df_papers = pd.read_csv('neurips_2024_papers.csv')
     
     # Initialize the driver
     driver = setup_driver()
     
-    # List to store results
-    results = []
-    
-    # Process each URL with a progress bar
-    for url in tqdm(df_papers['URL'], desc="Scraping papers"):
-        paper_details = scrape_paper_details(url, driver)
-        if paper_details:
-            results.append(paper_details)
+    try:
+        # List to store results
+        results = []
         
-        # Add a small delay to avoid overwhelming the server
-        time.sleep(2)
-    
-    # Create DataFrame and save to CSV
-    df_results = pd.DataFrame(results)
-    df_results.to_csv('neurips_2024_papers_details.csv', index=False)
-    
-    # Cleanup
-    driver.quit()
-    
-    print(f"Successfully scraped {len(results)} papers")
-    print("\nFirst few entries:")
-    print(df_results.head())
-    
-if __name__ == "__main__":
-    # main()
+        # Select URLs based on mode
+        urls = df_papers['URL'][:3] if args.test else df_papers['URL']
+        mode_desc = "Testing with 3 papers" if args.test else "Scraping papers"
+        
+        # Process each URL with a progress bar
+        for url in tqdm(urls, desc=mode_desc):
+            paper_details = scrape_paper_details(url, driver)
+            if paper_details:
+                results.append(paper_details)
+            
+            # Add a small delay to avoid overwhelming the server
+            time.sleep(2)
+        
+        # Create DataFrame
+        df_results = pd.DataFrame(results)
+        
+        # Ensure consistent column order
+        desired_columns = ['format', 'title', 'authors', 'abstract', 'url']
+        df_results = df_results.reindex(columns=desired_columns)
+        
+        # Generate output filename based on mode
+        output_file = 'neurips_2024_papers_test.csv' if args.test else 'neurips_2024_papers_details.csv'
+        
+        # Save to CSV
+        df_results.to_csv(output_file, index=False)
+        
+        print(f"\nSuccessfully scraped {len(results)} papers")
+        print(f"Results saved to: {output_file}")
+        print("\nFirst few entries:")
+        pd.set_option('display.max_columns', None)
+        pd.set_option('display.width', None)
+        print(df_results.head())
+        
+    finally:
+        # Cleanup
+        driver.quit()
 
-    # test with a single url first
-    url = "https://nips.cc/virtual/2024/poster/96272"
-    
-    # Initialize the driver
-    driver = setup_driver()
-    
-    # Test with single URL
-    paper_details = scrape_paper_details(url, driver)
-    
-    if paper_details:
-        print("\nTest paper details:")
-        for key, value in paper_details.items():
-            print(f"{key}: {value}")
-    
-    # Cleanup
-    driver.quit()
+if __name__ == "__main__":
+    main()

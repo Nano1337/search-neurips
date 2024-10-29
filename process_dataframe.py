@@ -7,6 +7,8 @@ import pandas as pd
 import time
 from tqdm import tqdm
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
 
 def setup_driver():
     options = webdriver.ChromeOptions()
@@ -32,55 +34,29 @@ def scrape_paper_details(url, driver):
     try:
         driver.get(url)
         
-        # Define all selectors upfront for better maintainability
+        # Only need abstract-related selectors now
         SELECTORS = {
-            'format': "h3.text-center",
-            'title': ".card-title.main-title.text-center",
-            'authors': ".card-subtitle.mb-2.text-muted.text-center",
             'abstract_button': 'a.card-link[data-bs-toggle="collapse"][href="#abstract_details"]',
             'abstract_div': '#abstract_details.collapse.show'
         }
         
-        # Replace individual wait_for_element calls with batch collection
         wait = WebDriverWait(driver, 10)
-        result_dict = {}
         
-        # Collect basic elements (format, title, authors)
-        for key in ['format', 'title', 'authors']:
-            try:
-                element_text = wait.until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, SELECTORS[key]))
-                ).text
-                
-                # Special processing for authors
-                if key == 'authors':
-                    # Split by · (middle dot) and strip whitespace from each author
-                    result_dict[key] = [author.strip() for author in element_text.split('·')]
-                else:
-                    result_dict[key] = element_text
-                    
-            except TimeoutException:
-                print(f"Timeout waiting for {key}")
-                return None
-        
-        # Handle abstract with improved error handling
+        # Handle abstract
         try:
             abstract_button = wait.until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, SELECTORS['abstract_button']))
             )
             
-            # Combine scrolling and clicking
             driver.execute_script("""
                 arguments[0].scrollIntoView(true);
                 arguments[0].click();
             """, abstract_button)
             
-            # More efficient abstract text extraction
             abstract_div = wait.until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, SELECTORS['abstract_div']))
             )
             
-            # Optimized selector list with more specific selectors first
             abstract_text = None
             for selector in ['p.card-text', '#abstractExample', '.card-body p', 'p']:
                 found_elements = abstract_div.find_elements(By.CSS_SELECTOR, selector)
@@ -88,76 +64,82 @@ def scrape_paper_details(url, driver):
                     abstract_text = found_elements[0].text.strip()
                     break
             
-            if abstract_text:
-                # Remove "Abstract:" prefix (case-insensitive)
-                abstract_text = abstract_text.replace('Abstract:', '', 1).strip()
-                result_dict['abstract'] = abstract_text
-            else:
-                result_dict['abstract'] = "Abstract text not found"
+            return abstract_text.replace('Abstract:', '', 1).strip() if abstract_text else "Abstract text not found"
             
         except Exception as e:
             print(f"Error with abstract: {str(e)}")
-            result_dict['abstract'] = "Error retrieving abstract"
-        
-        result_dict['url'] = url
-        return result_dict
+            return "Error retrieving abstract"
         
     except Exception as e:
         print(f"Error processing {url}: {str(e)}")
         return None
 
-def main():
-    # Set up argument parser
-    parser = argparse.ArgumentParser(description='Scrape NeurIPS 2024 paper details')
-    parser.add_argument('--test', action='store_true', help='Run test mode with first 3 links')
-    args = parser.parse_args()
-    
-    # Read the CSV file with paper URLs
-    df_papers = pd.read_csv('neurips_2024_papers.csv')
-    
-    # Initialize the driver
+def process_single_url(url):
+    """Helper function to process a single URL with its own driver"""
     driver = setup_driver()
-    
     try:
-        # List to store results
-        results = []
-        
-        # Select URLs based on mode
-        urls = df_papers['URL'][:3] if args.test else df_papers['URL']
-        mode_desc = "Testing with 3 papers" if args.test else "Scraping papers"
-        
-        # Process each URL with a progress bar
-        for url in tqdm(urls, desc=mode_desc):
-            paper_details = scrape_paper_details(url, driver)
-            if paper_details:
-                results.append(paper_details)
-            
-            # Add a small delay to avoid overwhelming the server
-            time.sleep(2)
-        
-        # Create DataFrame
-        df_results = pd.DataFrame(results)
-        
-        # Ensure consistent column order
-        desired_columns = ['format', 'title', 'authors', 'abstract', 'url']
-        df_results = df_results.reindex(columns=desired_columns)
-        
-        # Generate output filename based on mode
-        output_file = 'neurips_2024_papers_test.csv' if args.test else 'neurips_2024_papers_details.csv'
-        
-        # Save to CSV
-        df_results.to_csv(output_file, index=False)
-        
-        print(f"\nSuccessfully scraped {len(results)} papers")
-        print(f"Results saved to: {output_file}")
-        print("\nFirst few entries:")
-        pd.set_option('display.max_columns', None)
-        pd.set_option('display.width', None)
-        print(df_results.head())
-        
+        abstract = scrape_paper_details(url, driver)
+        return abstract
     finally:
-        # Cleanup
         driver.quit()
+
+def main():
+    # Add argument parser
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--test', action='store_true', help='Run in test mode with only 4 samples')
+    args = parser.parse_args()
+
+    # Read the JSON file
+    df_papers = pd.read_json('nips_2024.json')
+    
+    # Apply test mode if specified
+    if args.test:
+        df_papers = df_papers.head(4)
+        max_workers = 4  # Limit workers in test mode
+        print("Running in test mode with first 4 samples...")
+    else:
+        max_workers = min(32, os.cpu_count() * 4)  # Limit to 32 workers maximum
+    
+    print(f"Starting scraping with {max_workers} workers...")
+    
+    # Initialize results dictionary to maintain order
+    abstracts = {}
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks and store futures
+        future_to_url = {
+            executor.submit(process_single_url, url): i 
+            for i, url in enumerate(df_papers['site'])
+        }
+        
+        # Process completed futures with progress bar
+        with tqdm(total=len(df_papers), desc="Scraping abstracts") as pbar:
+            for future in as_completed(future_to_url):
+                index = future_to_url[future]
+                try:
+                    abstract = future.result()
+                    abstracts[index] = abstract
+                except Exception as e:
+                    print(f"Error processing URL at index {index}: {str(e)}")
+                    abstracts[index] = "Error retrieving abstract"
+                pbar.update(1)
+    
+    # Convert results dictionary to list in correct order
+    ordered_abstracts = [abstracts[i] for i in range(len(df_papers))]
+    
+    # Add abstracts to dataframe
+    df_papers['abstract'] = ordered_abstracts
+    
+    # Save to CSV with appropriate name
+    output_file = 'nips_2024_with_abstracts_test.csv' if args.test else 'nips_2024_with_abstracts.csv'
+    df_papers.to_csv(output_file, index=False)
+    
+    print(f"\nSuccessfully scraped {len(ordered_abstracts)} abstracts")
+    print(f"Results saved to: {output_file}")
+    print("\nFirst few entries:")
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.width', None)
+    print(df_papers.head())
 
 if __name__ == "__main__":
     main()

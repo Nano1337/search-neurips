@@ -30,89 +30,77 @@ def wait_for_element(driver, selector, by=By.CSS_SELECTOR, timeout=10):
 def scrape_paper_details(url, driver):
     try:
         driver.get(url)
-        time.sleep(2)  # Allow initial page load
         
-        # Get format
-        format_type = wait_for_element(driver, "h3.text-center")
-        if not format_type:
-            return None
-        format_type = format_type.text
+        # Define all selectors upfront for better maintainability
+        SELECTORS = {
+            'format': "h3.text-center",
+            'title': ".card-title.main-title.text-center",
+            'authors': ".card-subtitle.mb-2.text-muted.text-center",
+            'abstract_button': 'a.card-link[data-bs-toggle="collapse"][href="#abstract_details"]',
+            'abstract_div': '#abstract_details.collapse.show'
+        }
         
-        # Get title
-        title = wait_for_element(driver, ".card-title.main-title.text-center")
-        if not title:
-            return None
-        title = title.text
+        # Replace individual wait_for_element calls with batch collection
+        wait = WebDriverWait(driver, 10)
+        result_dict = {}
         
-        # Get authors
-        authors = wait_for_element(driver, ".card-subtitle.mb-2.text-muted.text-center")
-        if not authors:
-            return None
-        authors = authors.text
+        # Collect basic elements (format, title, authors)
+        for key in ['format', 'title', 'authors']:
+            try:
+                element_text = wait.until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, SELECTORS[key]))
+                ).text
+                
+                # Special processing for authors
+                if key == 'authors':
+                    # Split by · (middle dot) and strip whitespace from each author
+                    result_dict[key] = [author.strip() for author in element_text.split('·')]
+                else:
+                    result_dict[key] = element_text
+                    
+            except TimeoutException:
+                print(f"Timeout waiting for {key}")
+                return None
         
-        # Try to find and click abstract button with better state handling
+        # Handle abstract with improved error handling
         try:
-            # Wait for the abstract button in collapsed state
-            wait = WebDriverWait(driver, 10)
             abstract_button = wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, 
-                    'a.card-link[data-bs-toggle="collapse"][href="#abstract_details"]'))
+                EC.element_to_be_clickable((By.CSS_SELECTOR, SELECTORS['abstract_button']))
             )
             
-            if abstract_button:
-                # Scroll to button to ensure it's clickable
-                driver.execute_script("arguments[0].scrollIntoView(true);", abstract_button)
-                time.sleep(1)
-                
-                # Click using JavaScript
-                driver.execute_script("arguments[0].click();", abstract_button)
-                time.sleep(1)  # Wait for click to register
-                
-                # Wait for collapse animation
-                try:
-                    wait.until(EC.presence_of_element_located((By.CLASS_NAME, "collapsing")))
-                except TimeoutException:
-                    pass  # It's okay if we miss the collapsing state
-                
-                # Wait for expanded state
-                abstract_div = wait.until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, 
-                        '#abstract_details.collapse.show'))
-                )
-                
-                # Try multiple selectors for the abstract text
-                abstract_text = None
-                selectors = [
-                    'p.card-text',
-                    '.card-body p',
-                    '#abstractExample',
-                    'p'
-                ]
-                
-                for selector in selectors:
-                    try:
-                        abstract_element = abstract_div.find_element(By.CSS_SELECTOR, selector)
-                        if abstract_element and abstract_element.text.strip():
-                            abstract_text = abstract_element.text.strip()
-                            break
-                    except:
-                        continue
-                
-                abstract = abstract_text if abstract_text else "Abstract text not found"
+            # Combine scrolling and clicking
+            driver.execute_script("""
+                arguments[0].scrollIntoView(true);
+                arguments[0].click();
+            """, abstract_button)
+            
+            # More efficient abstract text extraction
+            abstract_div = wait.until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, SELECTORS['abstract_div']))
+            )
+            
+            # Optimized selector list with more specific selectors first
+            abstract_text = None
+            for selector in ['p.card-text', '#abstractExample', '.card-body p', 'p']:
+                found_elements = abstract_div.find_elements(By.CSS_SELECTOR, selector)
+                if found_elements and found_elements[0].text.strip():
+                    abstract_text = found_elements[0].text.strip()
+                    break
+            
+            if abstract_text:
+                # Remove "Abstract:" prefix (case-insensitive)
+                abstract_text = abstract_text.replace('Abstract:', '', 1).strip()
+                result_dict['abstract'] = abstract_text
             else:
-                abstract = "Abstract button not found"
-                
+                result_dict['abstract'] = "Abstract text not found"
+            
         except Exception as e:
-            print(f"Error with abstract button: {e}")
-            abstract = "Error retrieving abstract"
+            print(f"Error with abstract: {str(e)}")
+            result_dict['abstract'] = "Error retrieving abstract"
         
-        return {
-            'format': format_type,
-            'title': title,
-            'authors': authors,
-            'abstract': abstract,
-            'url': url
-        }
+        result_dict['url'] = url
+        return result_dict
+        
     except Exception as e:
         print(f"Error processing {url}: {str(e)}")
         return None
@@ -146,11 +134,12 @@ def main():
     print(f"Successfully scraped {len(results)} papers")
     print("\nFirst few entries:")
     print(df_results.head())
+    
 if __name__ == "__main__":
     # main()
 
     # test with a single url first
-    url = "https://nips.cc/virtual/2024/poster/93870"
+    url = "https://nips.cc/virtual/2024/poster/96272"
     
     # Initialize the driver
     driver = setup_driver()
